@@ -26,3 +26,40 @@ ax2.margins(0.25)
 
 plt.tight_layout()
 plt.show()
+
+
+
+
+import re
+from collections import Counter
+
+_TOKEN = re.compile(r"\w+", re.UNICODE)
+
+
+def tokenize(text):
+    return _TOKEN.findall(text.lower())
+
+
+doc_tokens = [Counter(tokenize(f"{d.title}. {d.text}")) for d in docs]
+N = len(docs)
+# Dokumentfrequenz je Wort: in wie vielen Dokumenten kommt es vor?
+df = Counter(w for tokens in doc_tokens for w in tokens)
+
+
+def sparse_suche(frage, k=3):
+    """Gewichtete Wortüberlappung: häufig im Dokument, selten im Korpus = viele Punkte."""
+    scores = []
+    for tokens in doc_tokens:
+        s = 0.0
+        for w in tokenize(frage):
+            if w in tokens:
+                idf = np.log(N / df[w])       # seltenes Wort, hoher Wert
+                s += tokens[w] * idf
+        scores.append(s)
+    top = np.argsort(scores)[::-1][:k]
+    # Score 0 heißt: kein einziges Wort der Frage kommt vor. Solche Dokumente
+    # sind keine Treffer, sondern nur Rauschen, und fliegen raus.
+    return [(doc_ids[i], float(scores[i])) for i in top if scores[i] > 0]
+
+
+print(sparse_suche("P12-2007"))

@@ -1,65 +1,60 @@
-import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
 
-labels = [f"S{i+1}" for i in range(len(sentences))]
-xy = PCA(n_components=2).fit_transform(vektoren)
+import numpy as np
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
-
-# Links: Ähnlichkeitsmatrix als Heatmap
-ax1.imshow(sim, cmap="Blues", vmin=0, vmax=1)
-ax1.set_xticks(range(len(sentences)), labels)
-ax1.set_yticks(range(len(sentences)), labels)
-for i in range(len(sentences)):
-    for j in range(len(sentences)):
-        ax1.text(j, i, f"{sim[i, j]:.2f}", ha="center", va="center",
-                 color="white" if sim[i, j] > 0.6 else "black")
-ax1.set_title("Cosine-Ähnlichkeit")
-
-# Rechts: PCA-Projektion, jeder Punkt ein Satz.
-ax2.scatter(xy[:, 0], xy[:, 1], s=80)
-for (x, y), lab, satz in zip(xy, labels, sentences):
-    ax2.annotate(f"{lab}: {satz[:28]}", (x, y), xytext=(6, 4),
-                 textcoords="offset points", fontsize=9)
-ax2.set_title("PCA-Projektion der Vektoren")
-ax2.margins(0.25)
-
-plt.tight_layout()
-plt.show()
-
+from common import embeddings as E
+from common.corpus import load_corpus
+from common.goldset import load_queries, qrels
+from common import retrieval as R
 
 
 
 import re
-from collections import Counter
 
-_TOKEN = re.compile(r"\w+", re.UNICODE)
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-
-def tokenize(text):
-    return _TOKEN.findall(text.lower())
+docs = load_corpus()
 
 
-doc_tokens = [Counter(tokenize(f"{d.title}. {d.text}")) for d in docs]
-N = len(docs)
-# Dokumentfrequenz je Wort: in wie vielen Dokumenten kommt es vor?
-df = Counter(w for tokens in doc_tokens for w in tokens)
+def chunk_absatz(docs, max_chars=550):
+    """Strategie A: absatzweise packen (der Default aus common.retrieval)."""
+    return R.chunk_corpus(docs, max_chars=max_chars)
 
 
-def sparse_suche(frage, k=3):
-    """Gewichtete Wortüberlappung: häufig im Dokument, selten im Korpus = viele Punkte."""
-    scores = []
-    for tokens in doc_tokens:
-        s = 0.0
-        for w in tokenize(frage):
-            if w in tokens:
-                idf = np.log(N / df[w])       # seltenes Wort, hoher Wert
-                s += tokens[w] * idf
-        scores.append(s)
-    top = np.argsort(scores)[::-1][:k]
-    # Score 0 heißt: kein einziges Wort der Frage kommt vor. Solche Dokumente
-    # sind keine Treffer, sondern nur Rauschen, und fliegen raus.
-    return [(doc_ids[i], float(scores[i])) for i in top if scores[i] > 0]
+def chunk_sliding(docs, size=400, overlap=80):
+    """Strategie B: zeichenbasiertes Sliding-Window mit Überlappung."""
+    out = []
+    for d in docs:
+        text = d.text
+        step = max(1, size - overlap)
+        i = idx = 0
+        while i < len(text):
+            piece = text[i:i + size].strip()
+            if piece:
+                out.append(R.Chunk(f"{d.doc_id}#s{idx}", d.doc_id, d.title, piece, d.acl))
+                idx += 1
+            i += step
+    return out
 
 
-print(sparse_suche("P12-2007"))
+def chunk_recursive(docs, size=400, overlap=60):
+    """Strategie C: rekursiver Splitter (langchain), respektiert Trennzeichen."""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=size, chunk_overlap=overlap,
+        separators=["\n\n", "\n", ". ", " ", ""])
+    out = []
+    for d in docs:
+        for idx, piece in enumerate(splitter.split_text(d.text)):
+            piece = piece.strip()
+            if piece:
+                out.append(R.Chunk(f"{d.doc_id}#r{idx}", d.doc_id, d.title, piece, d.acl))
+    return out
+
+
+strategien = {
+    "absatz":    chunk_absatz(docs),
+    "sliding400": chunk_sliding(docs),
+    "recursive400": chunk_recursive(docs),
+}
+for name, ch in strategien.items():
+    laengen = [len(c.text) for c in ch]
+    print(f"  {name:14s}: {len(ch):3d} Chunks, Median {int(np.median(laengen)):3d} Zeichen")

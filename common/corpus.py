@@ -14,6 +14,8 @@ Die Dokumente liegen als Markdown unter common/corpus/
 from __future__ import annotations
 
 import os
+import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,6 +23,9 @@ CORPUS_DIR = Path(os.environ.get(
     "LAB_CORPUS_DIR",
     str(Path(__file__).parent / "corpus"),
 ))
+
+ACL_LEVELS = frozenset({"all", "wartung", "vertraulich"})
+ACL_DEFAULT = "vertraulich"
 
 
 @dataclass
@@ -34,20 +39,46 @@ class Doc:
 
 
 def _parse(path: Path) -> Doc:
-    raw = path.read_text(encoding="utf-8")
+    raw = path.read_text(encoding="utf-8-sig").lstrip()
     meta: dict = {}
     body = raw
-    if raw.startswith("---"):
-        _, fm, body = raw.split("---", 2)
-        for line in fm.strip().splitlines():
+
+    lines = raw.splitlines(keepends=True)
+    if lines and lines[0].strip() == "---":
+        try:
+            end = next(i for i, line in enumerate(lines[1:], start=1)
+                       if line.strip() == "---")
+        except StopIteration as exc:
+            raise ValueError(f"{path.name}: Frontmatter ist nicht abgeschlossen") from exc
+
+        for line in lines[1:end]:
             if ":" in line:
                 k, v = line.split(":", 1)
-                meta[k.strip()] = v.strip()
+                # YAML-ähnliche Inline-Kommentare unterstützen, ohne z. B. C#
+                # als Kommentar zu interpretieren.
+                v = re.sub(r"\s+#.*$", "", v).strip()
+                meta[k.strip()] = v
+        body = "".join(lines[end + 1:])
+
+    if "acl" not in meta:
+        warnings.warn(
+            f"{path.name}: keine ACL im Frontmatter; "
+            f"verwende sicheren Default {ACL_DEFAULT!r}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    acl = meta.get("acl", ACL_DEFAULT)
+    if acl not in ACL_LEVELS:
+        raise ValueError(
+            f"{path.name}: ungültige ACL-Stufe {acl!r} "
+            f"(erlaubt: {sorted(ACL_LEVELS)})"
+        )
+
     return Doc(
         doc_id=meta.get("doc_id", path.stem),
         title=meta.get("title", path.stem),
         text=body.strip(),
-        acl=meta.get("acl", "all"),
+        acl=acl,
         path=str(path),
         meta=meta,
     )
